@@ -51,8 +51,8 @@ async function fetchHFPapers() {
   })
 }
 
-// ─── Generate layman summary via Claude API ───────────────────────────────────
-async function generateSummary(title, abstract, apiKey) {
+// ─── Generate layman summary via local Ollama API ───────────────────────────────────
+async function generateSummary(title, abstract) {
   const prompt = `You are explaining AI research to someone with zero technical background.
 
 Paper: "${title}"
@@ -61,30 +61,19 @@ Abstract: "${abstract}"
 Reply ONLY with valid JSON, no markdown fences, no extra text:
 {"emoji":"<one emoji>","headline":"<punchy sentence, max 12 words>","summary":"<2-3 sentences using everyday analogies — what they built, what problem it fixes, why it matters>","impact":"<one sentence on real-world use>"}`
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  // Call our API (uses Ollama → Anthropic → HuggingFace fallback)
+  const res = await fetch('https://ai-papers-daily-v2.vercel.app/api/summarize', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 400,
-      messages: [{ role: 'user', content: prompt }],
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, abstract }),
   })
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err?.error?.message ?? `API ${res.status}`)
+    throw new Error(err?.error || 'Summary service unavailable')
   }
 
-  const data = await res.json()
-  const text = (data.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('')
-  const clean = text.replace(/```json|```/g, '').trim()
-  return JSON.parse(clean)
+  return await res.json()
 }
 
 // ─── Skeleton loader ──────────────────────────────────────────────────────────
@@ -242,10 +231,6 @@ export default function App() {
   const [loadingSum,    setLoadingSum]    = useState({})
   const [summarizingAll,setSummarizingAll]= useState(false)
   const [error,         setError]         = useState(null)
-  const [showModal,     setShowModal]     = useState(false)
-  const [apiKey,        setApiKey]        = useState(() => {
-    try { return localStorage.getItem('anthropic_key') || null } catch { return null }
-  })
 
   const loadPapers = useCallback(async () => {
     setLoadingPapers(true)
@@ -264,37 +249,28 @@ export default function App() {
 
   useEffect(() => { loadPapers() }, [loadPapers])
 
-  const saveKey = (key) => {
-    if (key) { try { localStorage.setItem('anthropic_key', key) } catch {} }
-    setApiKey(key)
-    setShowModal(false)
-  }
-
   const handleSummarize = useCallback(async (paper) => {
-    if (!apiKey) { setShowModal(true); return }
     setLoadingSum(prev => ({ ...prev, [paper.id]: true }))
     try {
-      const s = await generateSummary(paper.title, paper.abstract, apiKey)
+      const s = await generateSummary(paper.title, paper.abstract)
       setSummaries(prev => ({ ...prev, [paper.id]: s }))
     } catch (e) {
       setSummaries(prev => ({ ...prev, [paper.id]: { emoji:'⚠️', headline:'Summary failed', summary: e.message || 'Please try again.', impact:'' } }))
     } finally {
       setLoadingSum(prev => ({ ...prev, [paper.id]: false }))
     }
-  }, [apiKey])
+  }, [])
 
   const handleSummarizeAll = useCallback(async () => {
-    if (!apiKey) { setShowModal(true); return }
     setSummarizingAll(true)
     for (const p of papers) {
       if (!summaries[p.id]) await handleSummarize(p)
     }
     setSummarizingAll(false)
-  }, [papers, summaries, handleSummarize, apiKey])
+  }, [papers, summaries, handleSummarize])
 
   return (
     <div style={{ minHeight:'100vh', background:'#07090d' }}>
-      {showModal && <KeyModal onSave={saveKey} />}
 
       {/* Subtle grid */}
       <div style={{ position:'fixed', inset:0, pointerEvents:'none', zIndex:0, opacity:.015,
@@ -316,20 +292,9 @@ export default function App() {
                 AI Research, Decoded
               </h1>
               <p style={{ color:'#444', fontSize:13, lineHeight:1.85, maxWidth:500, fontFamily:'Lora,serif' }}>
-                Latest papers straight from Hugging Face — loaded in seconds, summarized in plain English by Claude AI.
+                Latest papers from Hugging Face — summarized in plain English for free!
               </p>
             </div>
-
-            <button onClick={()=>setShowModal(true)} style={{
-              background: apiKey ? 'rgba(6,214,160,.1)' : 'rgba(255,107,53,.1)',
-              color:       apiKey ? '#06d6a0'            : '#ff6b35',
-              border:`1px solid ${apiKey?'rgba(6,214,160,.22)':'rgba(255,107,53,.22)'}`,
-              borderRadius:10, padding:'10px 16px', fontSize:11,
-              fontFamily:'Space Mono,monospace', cursor:'pointer',
-              display:'flex', alignItems:'center', gap:6, whiteSpace:'nowrap',
-            }}>
-              {apiKey ? '🔑 Key saved' : '🔑 Add API key'}
-            </button>
           </div>
         </div>
 
